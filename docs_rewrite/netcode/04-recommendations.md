@@ -50,7 +50,11 @@ Floating-point fields have a kind symbol: zero; integral value within +-4096; **
 
 - The gap list and per-field distributions are where most of the 50 % comes from (measured: 337.6 to 168.5).
 - Angles as indices are the second largest item (a further 19 %, 168.5 to 136.9) and cost no precision.
-- The delta of 32-bit float patterns is lossless and exploits that nearby positions share exponent and high mantissa bits. It leaves about 20 bits per coordinate. Reducing that further needs a model of motion, not a different coder (see 06, section 6.7).
+- The delta of 32-bit float patterns is lossless and exploits that nearby positions share exponent and high mantissa bits. It leaves about 20 bits per coordinate. Reducing that further needs a model of motion, not a different coder.
+
+### Prediction modes to add (measured in ideal bytes, 03 section 3.12)
+
+Offer three more modes to the per-field chooser: a time field against the message's `serverTime`; a position against `old + velocity * elapsed` (mean of the old and the new velocity, with the velocity fields coded first), residual taken on the float32 patterns; an angle index against `2 * old - older` (the base's own base). Together they took 136.9 to 106.1 bytes on the test part. They need a fixed, specified float computation for the position prediction and access to the base's base on both sides. Confirm them with the real encoder before relying on the number.
 
 ## 4.3 Precision policy
 
@@ -125,3 +129,23 @@ Recommendation: do the codec first on the existing netchan (phase 1 of 05). The 
 - **Default `rate`.** At the client default of 4000 bytes per second the engine delays 93 % of snapshots; the new codec delays 39 %. With the new codec, the default can be raised or the rate formula's 48-byte allowance revisited. Measure after the codec exists.
 - **Snapshot rate.** `snaps` 20 and `sv_fps` 20 are the defaults used in the captures. A higher rate is cheaper in bytes per snapshot with the new codec, but the study did not measure its effect on size per second.
 - **Not studied (and potentially large):** per-client priority and bandwidth budgets, distance-based update frequency, interest management (culling entities the client does not need), and delta coding of entities relative to each other. The study measured only how well a given set of updates is coded, not which updates to send.
+
+## 4.10 Settings to remove or compute (owner's goal 3 in the README)
+
+Network settings found in TaystJK (defaults in brackets). The aim is that players and administrators set none of them; the engine measures and adapts. New commands and cvars for debugging and statistics are welcome (for example forcing a value to test it, or printing the measured bandwidth, RTT, jitter, base age and bytes per snapshot); they must not be needed for normal play. Judgement, not measured.
+
+| setting | what it does today | replacement |
+|---|---|---|
+| `rate` (25000), `sv_maxRate`, `sv_minRate`, `sv_ratePolicy`, `sv_clientRate`, `sv_lanForceRate` | fixed bytes-per-second budget per client | bandwidth estimate per connection from the acknowledgement record (delivery rate, RTT growth, loss), as delay-based congestion control does; LAN detected by measurement, not by address class. An administrator cap on total upload may remain |
+| `snaps` (40), `sv_snapsMin`, `sv_snapsMax`, `sv_snapsPolicy` | snapshots per second per client | one snapshot per server frame, reduced only when the bandwidth estimate requires it |
+| `cl_maxpackets` (100), `cl_lanForcePackets` | client packets per second | one packet per client frame that has new input, limited by the same bandwidth estimate |
+| `cl_packetdup` (1) | repeats earlier `usercmd`s | resend every input not yet acknowledged by the server, up to a cap (the Overwatch scheme, 06 section 6.9) |
+| `cl_timeNudge` (0), `cl_timenudgeDuration`, `cg_smoothClients` (1) | shifts the client's view of time (negative = less interpolation delay, more extrapolation) and selects extrapolation of other players | interpolation delay computed from the measured snapshot interval and jitter (enough buffer to always have the next snapshot, no more); no user offset |
+| `cl_nodelta` (0) | asks for snapshots without a base | debugging only |
+| `cg_errorDecay` (100), `cg_snapshotTimeout` (10) | prediction-error smoothing time; time before a missing snapshot is reported | derived from the snapshot interval and RTT |
+| `sv_padPackets`, `showpackets`, `showdrop`, `cl_showTimeDelta` | debugging | keep as debugging tools or replace by statistics counters |
+| `PACKET_BACKUP` (32 / 128, a `#define`) | history of snapshots and commands | size from the largest RTT supported at the snapshot rate |
+| `sv_fps` (20 in this branch) | server frame rate | the one setting that stays, a game design choice |
+| `cl_timeout`, `sv_timeout` (200 s), `sv_zombietime` | disconnect timers | a few seconds, derived from the keep-alive interval |
+
+Related, outside the netcode but on the same principle: `pmove_fixed`, `pmove_msec` and `pmove_float` (game module, `game/g_xcvar.h:172-174`) change movement physics, and with `pmove_float 0` the velocity is rounded to integers every move (the captures show integral velocities, 03 section 3.6). A fixed physics step would remove the dependence on client frame rate (`com_maxfps`); that is a gameplay decision, especially for racing, and is not part of the codec work.

@@ -244,3 +244,27 @@ CPU on scenario A (C benchmark):
 | 128 | D. adaptive binary | 26,898 | 37,033 | 1,307.7 | 3.44 % |
 
 The engine writer model reproduces 1,499 of 1,500 measured snapshot sizes.
+
+## 3.12 Prediction variants (added 4 November 2026)
+
+Script: `bench5.py`. Ideal bytes, same split, smoothing and per-field mode chooser as `bench2.py`, angles as 16-bit indices (row 9 of 3.2 is the base). Each variant is lossless: the decoder has every input of the prediction before the value it predicts. Not yet confirmed with a real encoder.
+
+| variant | 5min-test mean | p95 | max | bots | solo |
+|---|---|---|---|---|---|
+| base (row 9 of 3.2) | 136.9 | 235 | 477 | 103.5 | 6.4 |
+| T: `pos.trTime`, `apos.trTime` (entities) and `commandTime` (player state) coded against the message's `serverTime` | 128.9 | 223 | 444 | 97.6 | 7.4 |
+| P1: positions predicted from the old position and the old velocity over the `trTime` / `commandTime` interval | 127.4 | 222 | 453 | 96.2 | 6.4 |
+| P2: as P1 with the mean of the old and the new velocity (velocity fields moved before positions) | 121.3 | 212 | 447 | 91.8 | 6.4 |
+| A2: angle indices predicted to second order from the base and the base's base | 129.7 | 222 | 465 | 98.4 | 6.4 |
+| T + P2 + A2 | **106.1** | 189 | 410 | 80.7 | 7.4 |
+
+Against the engine (337.6) the combined variant is -68.6 %; against the recommended schema with angle indices it is -22.5 %. The three gains add up almost exactly (8.0 + 15.6 + 7.2 = 30.8 bytes), so they act on different fields.
+
+Details and limits:
+
+- In the captures (1.01 base game module, `g_smoothClients` 1) players are sent as `TR_LINEAR_STOP` with `trTime` = the client's `commandTime` (`BG_PlayerStateToEntityStateExtraPolate`, 09 section 9.5), so `trTime - serverTime` is small and the elapsed time of the prediction is known exactly from `trTime`, which is the first entity field.
+- **This depends on the game module, not on the cvar value.** The captures were made with `g_smoothClients 1`, the value servers use; in the 1.01 base module any non-zero value selects the extrapolated form (`E:\Git\jka\jediacademy\codemp\game\g_active.c:3420`, `:3856`). TaystJK's own game module uses the extrapolated form only with `g_smoothClients 2`; with its default 1 it calls `BG_PlayerStateToEntityState` (`codemp/game/g_active.c:6283-6289`, `g_xcvar.h:154`), so players are `TR_INTERPOLATE` and `trTime` is not updated. Then variant T has nothing to gain on entities, and P1 / P2 must take the elapsed time from the two snapshots' `serverTime` instead of `trTime` (the decoder knows both). The mode chooser handles the first point; the second needs one more prediction rule. Not measured, because no capture uses that module.
+- The residual of P1 / P2 is the difference of the 32-bit patterns of the value and of the prediction rounded to float32. The prediction is computed in double from float32 inputs and rounded once; an implementation must fix this arithmetic (no fused multiply-add, same operation order) so that both sides compute the same 32 bits.
+- T is forced on in this run. It loses on the solo capture (6.4 to 7.4: a human's `commandTime` is further from `serverTime` than a bot's), so in the codec it must be one more mode offered to the per-field chooser, not a fixed rule.
+- A2 needs the base's own base. The client has it (it was needed to decode the base) as long as it is still in its snapshot ring, but the server must use the base's real delta source; `bench5.py` uses `seq - 2 * age`, which is right for these captures only (all ages are 1).
+- All captures are at 20 snapshots per second with bots; P2 and A2 should gain more at 40 Hz (smaller motion per delta) and less with human aiming. Not measured.

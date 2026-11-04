@@ -1,10 +1,19 @@
 # Netcode rework study: replacing the Huffman coder of Jedi Academy multiplayer
 
-Status: analysis finished, nothing implemented in the engine yet. Measurements were taken on 3 and 4 November 2026.
+Status: analysis finished, nothing implemented in the engine yet. Measurements were taken on 3 and 4 November 2026 against the original 1.01 dedicated server. On 4 November 2026 the folder was moved into TaystJK (this repository, the proof-of-concept base of the rewrite): the whole tool chain was re-run here with identical results, the code readings were re-checked in TaystJK ([09-taystjk.md](09-taystjk.md)), and prediction variants were measured (03, section 3.12).
 
 This folder records an investigation into replacing the network coding of Jedi Academy multiplayer (the Huffman-based `MSG_*` layer and the surrounding snapshot protocol) in a standalone game derived from CleanJK (itself derived from OpenJK, GPL v2). The owner is willing to break protocol compatibility and to change structures, protocol and third-party mods.
 
 The work was done by an AI assistant (Claude) working with the owner. Every number in these documents was produced by a script kept in `tools/`; where a statement is a reading of the source code it carries a `file:line` reference; where it is an estimate or an assumption it is marked as such. Nothing was taken from memory of the original game's behaviour without checking it in the code.
+
+## Owner's goals (stated 4 November 2026)
+
+These constrain every recommendation in this folder:
+
+1. **No loss of precision.** Values may be encoded differently (indices, prediction with a residual, another format) and may even be more precise than today, but never less precise than what the client receives from the original code. In practice this means the decoded values are identical to today's: float32 positions have a resolution of about 0.00006 unit near 1,000 units, finer than any fixed grid worth sending, so rounding to a grid (on the client or on the server) would lose precision and is excluded.
+2. **No compatibility constraint.** Protocol, structures, mods and the client's prediction and interpolation code can all be rewritten; the existing code may contain bugs or poor calculations.
+3. **As few network settings as possible.** Values such as `rate`, `snaps`, `cl_maxpackets`, `cl_packetdup` or the base selection should be computed or measured at run time (bandwidth, RTT, loss), not set by hand.
+4. **Reusable.** The netcode should be generic enough to be reused by other JKA forks: driven by the field tables (`entityStateFields`, `playerStateFields`) and by the common trajectory fields, not by rules of one game module.
 
 ## What the investigation found, in ten lines
 
@@ -18,6 +27,8 @@ The work was done by an AI assistant (Claude) working with the owner. Every numb
 8. The gamestate drops from 6 to 4 fragments (7048 to 4024 bytes on the 5-minute capture) and fewer fragments means fewer lost gamestates.
 9. The codec round-trips exactly on 8,842 real messages and on 27,225 synthetic messages (vehicles, pilot player states, downloads, extreme values, any base age). A worst-case input (every field of every entity random) costs 1.34 times the engine's size, so a raw-format escape path is required.
 10. Nothing here is measured with several human players, on other maps or other game modes. That is the largest open point.
+11. Prediction adds a further 22 % in ideal bytes, still lossless: time fields against `serverTime`, positions predicted from the velocity, angles to second order (136.9 to 106.1 bytes; 03, section 3.12). Not yet in the real codec.
+12. TaystJK sends the same bitstream as 1.01 (same tables, same Huffman table; the captures decode with TaystJK's tables), except the pilot player state (all 140 fields instead of 58). Its defaults differ (`sv_fps` 40, `snaps` 40, client rate forced to 90000), which removes rate limiting and changes the base age for a given RTT; the 1.01 conditions are restored with cvars ([09](09-taystjk.md)).
 
 ## Documents
 
@@ -31,6 +42,7 @@ The work was done by an AI assistant (Claude) working with the owner. Every numb
 | [06-verification-guide.md](06-verification-guide.md) | Claims with confidence levels, known weaknesses, mistakes made on the way, and ideas that were not explored | you are going to re-check the work or look for better solutions |
 | [07-reproduction.md](07-reproduction.md) | Tools, file formats, commands, data checksums, environment | you want to re-run something |
 | [08-transport-study.md](08-transport-study.md) | **Exploratory.** How the current transport and its "encryption" work, security implications, transport requirements derived from the measurements, candidate libraries as read (not run), and how to decide. Wait for the codec before acting on it | you are going to touch the transport |
+| [09-taystjk.md](09-taystjk.md) | What differs in TaystJK (wire format, defaults, challenge, demos, duel culling), a bug found, and where every function of 02 and 08 is in this tree | you work in this repository |
 | `tools/` | The Python and C code used (see 07) | |
 | `data/` | The three real captures, a copy of `msg.cpp` (2.6 MB, 0.5 MB, 0.1 MB), the C benchmark input files (13 MB and two small crowd scenarios) | you want to re-run anything |
 | `bin/` | `jkabench.exe` and `jkabench_libs.exe`, the Windows x64 builds used for the CPU measurements | you want to re-measure speed without compiling |
@@ -38,12 +50,12 @@ The work was done by an AI assistant (Claude) working with the owner. Every numb
 ## Suggested reading order
 
 - Owner or lead: this file, then 04, then 05; then 08 when the transport comes up (it is exploratory).
-- Engineer implementing: 02, 04, 05, then 03 as reference.
+- Engineer implementing: 02, 09, 04, 05, then 03 as reference.
 - A model or reviewer asked to re-verify and improve the work: 06 first, then 01, 02, 03, 07, and finally 04 and 05 to see what is proposed.
 
 ## Conventions used in these documents
 
-- "Engine" means the original 1.01 server code in `codemp/` (the tree this repository holds). "CleanJK" means the working base of the new game (`E:\Git\jka\CleanJK\Game\code`), which has the same network structure.
+- "Engine" means the original 1.01 server code (`E:\Git\jka\jediacademy\codemp`), which produced the captures. "TaystJK" means this repository (`codemp/`), OpenJK-derived; its differences are in 09. "CleanJK" means the working base of the new game (`E:\Git\jka\CleanJK\Game\code`), which has the same network structure.
 - "Snapshot" is the server-to-client message that carries one player state and the visible entities. "Message" is one server-to-client packet payload; it can hold server commands, a snapshot, a gamestate and other operations.
 - "Base" is the snapshot a delta is computed against. "Base age" is the distance in snapshots between the message and its base.
 - "Ideal bytes" are the code length a static entropy coder approaches (the sum of `-log2 p`); "real bytes" are produced by an actual encoder.

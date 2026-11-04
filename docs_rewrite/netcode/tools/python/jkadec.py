@@ -183,7 +183,7 @@ def load_tables(src):
         out = []
         for m in re.finditer(r"\{\s*(?:NETF|PSF)\((.+?)\),\s*([-\w]+)\s*\}", body):
             b = m.group(2)
-            b = GENTITYNUM_BITS if b == "GENTITYNUM_BITS" else int(b)
+            b = {"GENTITYNUM_BITS": GENTITYNUM_BITS, "MAX_POWERUPS": 16}.get(b) or int(b)   # OpenJK/TaystJK spell two widths as macros
             out.append((m.group(1), b))
         return out
     return dict(

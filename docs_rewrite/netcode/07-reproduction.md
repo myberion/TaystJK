@@ -43,6 +43,7 @@ The cvar is `proxy_sv_captureNet` (default 0, not archived). Switch it on before
 | `bench2.py` | New schema in ideal bytes: gap or flag coding, value contexts, quantisation, base age, angle-index option (`ANG16`), position rounding option (`POSQ`, `POS_FIELDS`). Defines the data structures used by the others. |
 | `bench3.py` | Coder families on the same symbols: ideal, rANS 12 and 15-bit, Huffman per context, adaptive binary. |
 | `bench4.py` | zstd, deflate and lzma on the raw layout; a real 32-bit rANS with round trip. |
+| `bench5.py` | Prediction variants on top of `bench2` (time fields against `serverTime`, positions predicted from velocity, second-order angle prediction), ideal bytes; added on 4 November 2026 (03, section 3.12). |
 | `run2.py`, `run_k.py` | Drivers: gap/flag/value-context/quantisation variants; base ages 1, 2, 4, 8. |
 | `rt_float.py` | Independent encoder and decoder of the float kinds; round trip on real and random floats. |
 | `codec.py` | Snapshot codec (header, player state, entities) with a real rANS; round trip; `python codec.py [ages...]`. |
@@ -103,7 +104,7 @@ The captures are the only copy of the data. Keep them (or a derived recording) w
 
 ## 7.6 Commands, in the order of the study
 
-From `docs/netcode/tools/python` (approximate run times on the study machine in brackets):
+From `docs_rewrite/netcode/tools/python` (approximate run times on the study machine in brackets):
 
 ```
 python jkadec.py <capture.bin>        # decoder check on one capture                       [1 s]
@@ -114,6 +115,7 @@ python run2.py                        # variants (value context, 1/16 quantisati
 python run_k.py                       # base age 1, 2, 4, 8                                 [90 s]
 python bench3.py                      # coder families                                      [25 s]
 python bench4.py                      # zstd / deflate / lzma, real rANS                    [60 s]
+python bench5.py                      # prediction variants base T P1 P2 A2 T+P2+A2          [110 s]
 python rt_float.py                    # float round trip                                    [5 s]
 python fullload.py                    # whole-message corpus (builds fullmsgs.pkl)          [5 s]
 python codec.py                       # snapshot codec round trip, real bytes               [8 s]
@@ -130,12 +132,12 @@ python dump_bench.py                  # writes bench_input.bin                  
 C benchmarks (Visual Studio 2022):
 
 ```
-# ready-made executables, from docs/netcode:
+# ready-made executables, from docs_rewrite/netcode:
 bin\jkabench.exe      data\bench_input.bin       # engine, static Huffman, rANS, adaptive binary
 bin\jkabench_libs.exe data\bench_input.bin       # ryg_rans, FSE, qbc, nibrans
 bin\jkabench.exe      data\bench_worst_A32.bin   # crowd scenarios A32 and A128
 
-# to rebuild them: from docs/netcode/tools/cpubench, with third_party/ cloned (7.4)
+# to rebuild them: from docs_rewrite/netcode/tools/cpubench, with third_party/ cloned (7.4)
 cmake -S . -B build -A x64
 cmake --build build --config Release
 build\Release\jkabench.exe      ..\..\data\bench_input.bin
@@ -151,12 +153,12 @@ The copies in `tools/python` use paths relative to the script, so nothing needs 
 
 | file | constant | value |
 |---|---|---|
-| `jkadec.py` | `SRC` | `../../data/msg.cpp` (SHA-256 `d0eea2162bb3b2c917ede93fc4582aff7af88cb2cc706d881176966742fa9d63`, 91,189 bytes), falling back to `../../../../codemp/qcommon/msg.cpp`; tables and `msg_hData` are extracted from it |
+| `jkadec.py` | `SRC` | `../../data/msg.cpp` (SHA-256 `d0eea2162bb3b2c917ede93fc4582aff7af88cb2cc706d881176966742fa9d63`, 91,189 bytes), falling back to `../../../../codemp/qcommon/msg.cpp` (TaystJK's copy; its tables and `msg_hData` are identical, see 09); tables and `msg_hData` are extracted from it |
 | `bdata.py` | `TMP` | `../../data` (the three capture files) |
 | `dump_bench.py` | `OUT` | `../../data/bench_input.bin` |
 | `worst.py` | `OUTDIR` | `../../data` (writes `bench_worst_*.bin` there) |
 
-The study itself ran with the absolute paths `E:\Git\jka\jediacademy\codemp\...` and `E:\Git\jka\jediacademy\tmp\...`; results are identical.
+The study itself ran with the absolute paths `E:\Git\jka\jediacademy\codemp\...` and `E:\Git\jka\jediacademy\tmp\...`; results are identical. A complete re-run in this repository on 4 November 2026 (every command of 7.6 except `dump_bench.py`, whose output `bench_input.bin` was checked by checksum instead) reproduced every size, count and failure figure of 03 exactly; `worst.py` rewrote `bench_worst_A32.bin` and `bench_worst_A128.bin` byte for byte. The executables of `bin/` (checksums unchanged) gave the same bytes and timings within 10 % of the table (for example engine encode 6,692 ns against 7,177; ryg_rans 954 against 951; engine at 128 crowd entities 54,938 against 59,911).
 
 Caches are created next to the scripts: `hufftree.pkl` (decode table), `bdata.pkl`, `fullmsgs.pkl`. Delete them after changing `jkadec.py`, the capture files or the source of `msg.cpp`.
 

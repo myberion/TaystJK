@@ -1,6 +1,6 @@
 # 5. Implementation plan: server, client and tooling changes
 
-This plan turns the recommendations of [04](04-recommendations.md) into work packages. File names are those of the original 1.01 tree in this repository; CleanJK has the same structure, but its paths and line numbers were not re-checked, so confirm each file before editing. Effort labels are rough: S = days, M = weeks, L = months, for one engineer who knows the code.
+This plan turns the recommendations of [04](04-recommendations.md) into work packages. File names are those of the original 1.01 tree; the same functions in TaystJK, with their line numbers, are listed in [09-taystjk.md](09-taystjk.md) section 9.5. CleanJK has the same structure, but its paths and line numbers were not re-checked, so confirm each file before editing. Effort labels are rough: S = days, M = weeks, L = months, for one engineer who knows the code.
 
 ## 5.1 Principles
 
@@ -71,7 +71,7 @@ Interfaces (shape only):
 
 - Move the study's tools into a maintained location with relative paths (they have hard-coded Windows paths, see 07).
 - Create one source of truth for the field descriptors and make the schema generator read it.
-- Build the state recorder and record a first set of traces from the current server.
+- Build the state recorder and record a first set of traces from the current server, at the snapshot rate the game will ship with (TaystJK defaults to `sv_fps` 40; the study's captures are at 20, see 09 section 9.2).
 - Decide: protocol version number, whether to keep the legacy path, the name and location of the tables file.
 - Acceptance: a recording of a game can be replayed through a harness that reads states back and re-encodes them with the legacy writer to the same bytes.
 
@@ -79,6 +79,7 @@ Interfaces (shape only):
 
 - Implement `rans`, `schema`, `fieldcodec`, `msgcodec`, `tables` and the tests.
 - Port the study's behaviour: gap coding of changed fields, `eType` first, per-field modes, class + mantissa, float kinds including angle indices, header deltas, pilot and vehicle states, commands, gamestate, downloads.
+- Add the prediction modes of 04 section 4.2 (time against `serverTime`, position from velocity, second-order angle) and measure them with the real encoder.
 - Train tables on the study's recordings (or new ones) and reproduce the study's numbers.
 - Acceptance: 0 mismatches on the golden traces and on at least 100,000 synthetic messages; random-byte decoding never crashes under a sanitizer; on a held-out recording of similar content the mean snapshot is within 5 % of 140 bytes (study: 139.6 on the 5-minute test part), the gamestate of the study map is near 4 KB, and encode time per snapshot is of the order of 2 microseconds for 300 symbols on an optimised build.
 

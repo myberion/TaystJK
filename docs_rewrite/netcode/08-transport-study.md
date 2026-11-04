@@ -12,6 +12,9 @@ Why wait for the codec:
 
 ### Connection
 
+This section describes the 1.01 code. TaystJK replaces the `rand()` challenge by a stateless HMAC-MD5 challenge and rate-limits connectionless packets per address; see [09-taystjk.md](09-taystjk.md) section 9.3.
+
+
 - Out-of-band (OOB) packets carry the handshake: `getchallenge`, `challengeResponse`, `connect`, plus `getinfo` and `getstatus` for server browsers and master servers. The `connect` string is compressed with the adaptive Huffman coder (`Huff_Compress`).
 - `SV_GetChallenge` (`server/sv_client.cpp:31`) creates a challenge `((rand() << 16) ^ rand()) ^ svs.time` per client address, in a table of `MAX_CHALLENGES` = 1024 entries (`server/server.h:190`), and answers at once for LAN clients. `rand()` is not a cryptographic generator. `AUTHORIZE_TIMEOUT` = 5000 ms (`server.h:192`) refers to the original CD-key authorisation, which no longer exists.
 - `SV_DirectConnect` (`:221`) checks the protocol version, reads the challenge and the `qport` from the user-info string.
