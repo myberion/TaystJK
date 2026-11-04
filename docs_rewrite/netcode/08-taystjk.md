@@ -1,10 +1,10 @@
-# 9. TaystJK: what differs from the 1.01 tree, and where the code is
+# 8. TaystJK: what differs from the 1.01 tree, and where the code is
 
-This study measured traffic from the original 1.01 dedicated server (through the YBEProxy capture, see 01). The analysis in [02](02-engine-code-findings.md) and [08](08-transport-study.md) cites the 1.01 source tree (`E:\Git\jka\jediacademy\codemp`). This repository is TaystJK, an OpenJK-derived client and server that is used for the proof of concept of the rewrite. This document records what was re-checked in the TaystJK source on 4 November 2026, what is identical, what differs, and where each function is in this tree.
+This study measured traffic from the original 1.01 dedicated server (through the YBEProxy capture, see 01). The analysis in [02](02-engine-code-findings.md) and [07](07-transport-study.md) cites the 1.01 source tree (`E:\Git\jka\jediacademy\codemp`). This repository is TaystJK, an OpenJK-derived client and server that is used for the proof of concept of the rewrite. This document records what was re-checked in the TaystJK source on 4 November 2026, what is identical, what differs, and where each function is in this tree.
 
 **The 1.01 server stays the reference for the measurements.** Where TaystJK differs, the difference is either a default setting (a cvar that can be set back) or one rule of the pilot player state, described below.
 
-## 9.1 Wire compatibility with 1.01: checked
+## 8.1 Wire compatibility with 1.01: checked
 
 | item | how it was checked | result |
 |---|---|---|
@@ -20,7 +20,7 @@ The only wire difference found:
 
 **Decision proposed for the rewrite:** do not restore the `- 82` rule. The new codec sends changed fields only, so the rule saves nothing, and OpenJK removed it because it caused bugs. The legacy path in the branch can stay as TaystJK has it.
 
-## 9.2 Defaults that differ (settings, not format)
+## 8.2 Defaults that differ (settings, not format)
 
 These change the conditions under which the 1.01 measurements apply. All are cvars except `PACKET_BACKUP`.
 
@@ -44,9 +44,9 @@ Consequences for the results of [03](03-results.md) (upstream defaults; the bran
 1. **Rate table (3.10).** With TaystJK's defaults (rate forced to 90000, 40 snapshots per second) the formula gives `rateMsec` = 17 ms for a 1,500-byte message, below the 25 ms interval: **no snapshot is ever rate-delayed**, whatever the codec. The 3.10 table only describes a 1.01 server, or a TaystJK server set back to `sv_ratePolicy 2` with low client rates.
 2. **Base age.** The loss and latency results (3.9) convert RTT to base age with 50 ms per snapshot. At 40 snapshots per second the same RTT gives twice the age (RTT 100 ms = age 4), but each snapshot then covers 25 ms of movement, so a delta of age 2 at 40 Hz spans the same time as age 1 at 20 Hz. The captures are all at 20 Hz; sizes at 40 Hz were **not measured**.
 3. **Bytes per second.** At 40 Hz the server sends twice as many snapshots. Each one is smaller than at 20 Hz (less movement per delta), but by how much is unknown. Record at 40 Hz before drawing conclusions on bandwidth.
-4. **To stay on the 1.01 conditions** on a TaystJK server, set `sv_fps 20`, `sv_ratePolicy 2`, `sv_maxRate 90000` (see 9.4 for why `sv_maxRate` must not stay 0), and on the client `rate 4000`, `snaps 20`. No code change is needed.
+4. **To stay on the 1.01 conditions** on a TaystJK server, set `sv_fps 20`, `sv_ratePolicy 2`, `sv_maxRate 90000` (see 8.4 for why `sv_maxRate` must not stay 0), and on the client `rate 4000`, `snaps 20`. No code change is needed.
 
-## 9.3 Other differences relevant to the netcode
+## 8.3 Other differences relevant to the netcode
 
 | item | TaystJK | where |
 |---|---|---|
@@ -63,15 +63,15 @@ Consequences for the results of [03](03-results.md) (upstream defaults; the bran
 | Player trajectories | Same cvar value, different behaviour: with `g_smoothClients 1` (the value used in the captures and on servers) TaystJK's game module sends players as `TR_INTERPOLATE` (no `trTime`), and only 2 gives the extrapolated form; the 1.01 base module used `TR_LINEAR_STOP` with `trTime` = `commandTime`. This changes the prediction variants of 03 section 3.12. The game module also snaps `pos.trBase` when it extrapolates a client that missed frames | `game/g_active.c:6283-6323`, `game/g_xcvar.h:154` |
 | Licence | 503 files under `codemp/` and `shared/` carry "GNU General Public License version 2 as"; 72 carry "version 2 or any later version". The GPL-v2-only conclusion of 02 section 2.9 holds for this tree | grep, not a legal reading |
 
-## 9.4 A bug found on the way
+## 8.4 A bug found on the way
 
 With `sv_ratePolicy 2` and the default `sv_maxRate 0`, `SV_UserinfoChanged` clamps the client rate with `Com_Clampi(sv_minRate, sv_maxRate, i)` = `Com_Clampi(0, 0, i)`, so the rate becomes 0 (`server/sv_client.cpp:1218`). `SV_RateMsec` then divides by `rate * timescale` = 0 (`server/sv_snapshot.cpp:782`). Not tested; read only. Set `sv_maxRate` when using policy 2, or fix the clamp.
 
-## 9.5 Where the functions of 02 and 08 are in this tree
+## 8.5 Where the functions of 02 and 07 are in this tree
 
 Paths are relative to `codemp/`. Line numbers as of commit `430aca2ef`.
 
-| function or item (02 / 08 section) | TaystJK location |
+| function or item (02 / 07 section) | TaystJK location |
 |---|---|
 | `MSG_WriteBits` / `MSG_ReadBits` (2.1) | `qcommon/msg.cpp:150` / `:244` |
 | `Huff_offsetReceive` / `Huff_offsetTransmit` / `Huff_Decompress` / `Huff_Compress` / `Huff_addRef` | `qcommon/huffman.cpp:272` / `:327` / `:333` / `:387` / `:186` |
@@ -113,6 +113,6 @@ Paths are relative to `codemp/`. Line numbers as of commit `430aca2ef`.
 | `CG_ScanForCrosshairEntity` | `cgame/cg_draw.c:9207` |
 | `lerpOrigin` count | 399 uses in 20 files (138 `cg_players.c`, 106 `cg_ents.c`, 62 `cg_draw.c`, 16 `cg_weapons.c`, 16 `cg_event.c`) |
 | `BG_PlayerStateToEntityState` / `...ExtraPolate` (player `pos` and `apos`) | `game/bg_misc.c:3024` / `:3174` |
-| `CL_ReadyToSendPacket` / `CL_WritePacket` (usercmd key `:1631`) (8.1) | `client/cl_input.cpp:1485` / `:1557` |
+| `CL_ReadyToSendPacket` / `CL_WritePacket` (usercmd key `:1631`) (7.1) | `client/cl_input.cpp:1485` / `:1557` |
 | `cl_timeout`, `sv_timeout`, `sv_zombietime` | `client/cl_main.cpp:3320`; `server/sv_init.cpp:1016-1017` |
 | `SV_DirectConnect` | `server/sv_client.cpp:131` |
