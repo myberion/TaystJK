@@ -39,7 +39,7 @@ Confidence: **high** = checked several independent ways; **medium** = checked on
 | C19 | Worst case is 1.34 times the engine's size | scenario B | high as a bound; not a realistic case | `worst.py` |
 | C20 | No licence conflict for ryg_rans, FSE, qbc, nibrans | licence files read | medium: legal reading of file headers across CleanJK is a grep | read the headers file by file |
 | C21 | Multi-human traffic behaves like bot traffic | assumed by the cloning scenario | **low, untested** | record two or more humans |
-| C22 | Prediction (time fields against `serverTime`, positions from velocity, second-order angles) saves a further 23 % (139.1 to 107.3 real bytes with the rANS trick) | `bench5.py` (ideal), `run_pred.py` (real codec; round trip on real, synthetic and simulated-loss messages) | medium: bots only, one map, 20 Hz; the `TR_INTERPOLATE` rule is untested on data | re-run on the recordings of step 4 of the plan |
+| C22 | Prediction (time fields against `serverTime`, positions from velocity, second-order angles) saves a further 23 % (139.1 to 107.3 real bytes with the rANS trick) | `bench5.py` (ideal), `run_pred.py` (real codec; round trip on real, synthetic and simulated-loss messages) | medium: bots only, one map, 20 Hz; the `TR_INTERPOLATE` rule is untested on data | re-run on the demos of step 4 of the plan |
 | C23 | TaystJK is wire-compatible with the 1.01 server except for the pilot player state | tables and Huffman frequencies compared; captures decoded with TaystJK's tables (08) | high | `jkadec.py` with `SRC` set to `codemp/qcommon/msg.cpp` |
 
 ## 5.3 The synthetic corpus: what it covers and what it proves

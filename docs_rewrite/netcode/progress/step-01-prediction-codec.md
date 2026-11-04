@@ -66,5 +66,5 @@ python run_full.py                    # study codec unchanged: snapshot mean 139
 
 ## What the next steps need from this one
 
-- Step 5 must re-run `run_pred.py` on the new recordings and check the `TR_INTERPOLATE` rule on TaystJK-module data.
+- Step 5 must re-run `run_pred.py` on the demos of step 4 and check the `TR_INTERPOLATE` rule on demos whose game module sends players that way.
 - Step 6 (C++) must implement: the field order of `enable_prediction()`, the integer prediction of 03 section 3.13, the A2 rule with the base's own base, the two symmetry rules above, and the rANS initial state of 1; and produce byte-identical output to `run_pred.py pi` with the same tables.

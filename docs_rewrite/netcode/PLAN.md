@@ -40,26 +40,38 @@ Depends on: nothing (can run alongside step 1).
 
 ### Step 3: state recorder in the server (S)
 
-Depends on: step 2.
+Depends on: step 2. **No longer needed before step 5**: client demos give the data (step 4). The recorder is still wanted later, to record states on this branch's server without a Huffman decoder and to feed the training of step 12.
 
 - A server option that writes, per client and per message, the decoded content the codec needs: header, player state(s), entity list, baselines, server commands, gamestate, downloads, the chosen base and the send time. Simple binary format with the schema hash.
 - It replaces the proxy capture of the study (which recorded bitstreams and needed a Huffman decoder). The proxy stays usable on the original 1.01 server.
 - Check: replaying a recording through the legacy writer gives back the same bytes as the live server sent (or the same values, if byte identity is not possible because of server-side `-0.0`, 05 section 5.4).
 
-### Step 4: new recordings (S to M, mostly playing)
+### Step 4: demo corpus (S; the owner supplies the demos)
 
-Depends on: step 3 (or the proxy on the 1.01 server).
+Depends on: nothing (decided 5 November 2026: client demos replace new recordings).
 
-- Record at `sv_fps` 20 (this branch's default): several humans together, several maps, FFA, team modes, duel, siege if kept, saber and force combat, vehicles if kept, and both game modules (the 1.01 base module, players as `TR_LINEAR_STOP`, and TaystJK's module, players as `TR_INTERPOLATE`, 03 section 3.12).
-- Keep a set of recordings out of all training (held-out set), chosen before any measurement.
-- Check: every recording replays (step 3 check); a written list of what each recording contains.
+Why demos work: the client writes into a demo exactly the server message it received, after removing the netchan header (fragments reassembled) and the XOR, and before nothing else is changed (`CL_PacketEvent` and `CL_WriteDemoMessage`, `codemp/client/cl_main.cpp:2274-2295`, `:238`). The proxy captures of the study hold the same message taken on the server just before `SV_Netchan_Transmit`. Differences, all handled by the reader:
+
+- a demo message ends with the `svc_EOF` the server appends after the proxy's capture point (remove it before measuring sizes);
+- the first message of a demo is a gamestate rebuilt by the client (`CL_Record`) from its configstrings and baselines, not the one the server sent: use it for decoding, never for gamestate sizes;
+- messages lost on the way are absent (the demo is the client's view, with the real base ages, losses and rate-delay flags of that player);
+- recording starts at the first snapshot without a base (`demowaiting`), so a demo decodes from its start.
+
+Work:
+
+- A `.dm_26` reader in `tools/python/jkadec.py` (per message: `int32` sequence, `int32` length, the bytes; end marker `-1 -1`), and its use in `bdata.py` and `fullload.py` in place of the capture files.
+- Validation as for the captures: every message must end within 1 to 8 bits of its length after `svc_EOF`; a demo written by another client that differs is rejected and listed.
+- The owner supplies demos in `data/demos/train/` and `data/demos/holdout/` (the held-out set is chosen before any measurement and never used for training). `data/demos/` is not committed (`.gitignore`); a list file records each demo: map, mode, mod, number of players, `sv_fps` if known, client or server demo, protocol.
+- Wanted: protocol 1.01 (`.dm_26`; 1.00 `.dm_25` was not checked); several humans per game; many maps; FFA, CTF, team FFA, duel, siege, race; base, JA+, JAPRO and other mods; both game-module behaviours (players as `TR_LINEAR_STOP` and as `TR_INTERPOLATE`, 03 section 3.12); server-side demos of TaystJK (`sv_autoDemo`) as well, which use the same format.
+- Check: every demo of the list decodes with the validation above; the list file exists; train and held-out sets are separate.
 
 ### Step 5: re-measure on the new data, finish the model (S)
 
 Depends on: steps 1 and 4.
 
-- Re-run `bench2.py`, `bench5.py` and the codec on the new recordings: sizes per map, mode and module; training on part, test on the held-out set.
-- Add the elapsed-time rule for `TR_INTERPOLATE` players (P2 with the two snapshots' `serverTime`), measured on TaystJK-module recordings.
+- Re-run `bench2.py`, `bench5.py`, `run_pred.py` and the loss simulation on the demos: sizes per map, mode, mod and `sv_fps`; training on the train set, test on the held-out set. Compare with the study's figures (one map, bots).
+- The demos carry real base ages: report sizes by base age as well, and compare with `sim_loss.py`.
+- Check the elapsed-time rule for `TR_INTERPOLATE` players (P2 with the two snapshots' `serverTime`) on demos of servers whose game module sends players that way.
 - Decide: one global table set or per-mode sets; age as a context or not (04 section 4.5).
 - Check: documented mean / p95 / max on the held-out set per map and mode; if held-out sizes exceed training sizes by more than 15 %, widen the training data first.
 
@@ -151,8 +163,8 @@ Not studied; the largest unexplored potential (05 section 5.7):
 |---|---|---|---|
 | 1 | prediction modes and rANS trick in the Python codec | none | S |
 | 2 | field descriptors from one source | none | S |
-| 3 | state recorder | 2 | S |
-| 4 | new recordings | 3 | S to M |
+| 3 | state recorder (later; not needed before step 5) | 2 | S |
+| 4 | demo corpus: `.dm_26` reader, demos from the owner | none | S |
 | 5 | re-measure, finish the model | 1, 4 | S |
 | 6 | C++ codec library | 2, 5 | M |
 | 7 | engine integration, demos | 6 | M |
@@ -182,7 +194,7 @@ Not studied; the largest unexplored potential (05 section 5.7):
 
 | risk | consequence | mitigation |
 |---|---|---|
-| Training data too narrow | real packets larger than measured | step 4 recordings, held-out set, escape path |
+| Training data too narrow | real packets larger than measured | step 4 demo corpus, held-out set, escape path |
 | Table drift when content or mods change | larger packets, never wrong ones | versioned tables, uniform fallback, retrain in the release procedure |
 | P2 prediction computed differently on client and server | wrong positions on the client | integer version, or fixed float arithmetic with the determinism test |
 | A2 base's base not available on the client | decode failure | the server uses the base's real delta source; fall back to plain delta when the client cannot have it |
