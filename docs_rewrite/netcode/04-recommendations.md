@@ -9,11 +9,13 @@ Each recommendation states how strongly the evidence supports it: **measured** (
 | Entropy coder | Static, offline-trained, per-packet-independent rANS with 12 to 15-bit probabilities. First implementation: a ryg_rans-style 32-bit byte-renormalising rANS (CC0, 319 lines). Keep the coder behind a small interface; FSE (tANS) saves 2 bytes per packet and can replace it later. | measured |
 | Do not use | Adaptive coders (qbc, nibrans, adaptive binary), generic compressors (zstd, deflate, lzma), context mixing, anything whose state survives across packets | measured, judgement |
 | Message model | Replace the snapshot encoding by the schema in 4.2: one stream per message, delta against an acknowledged base, no `lc` byte, changed fields listed as gaps with context, per-field trained distributions | measured |
-| Precision | Keep every value the client sees identical to today. Code view angles and entity angles as 16-bit indices (lossless). Do not round positions. | measured, read |
+| Precision | Never less precise than today (owner's goal). Code view angles and entity angles as 16-bit indices (lossless). Do not round positions, on the client or on the server. | measured, read |
+| Prediction | Add lossless prediction modes (time against `serverTime`, position from velocity, second-order angle) to the per-field chooser: 136.9 to 106.1 ideal bytes | measured (ideal bytes only) |
 | Tables | Generate the probability tables offline from recorded states, version them, load them as data, and ship a fallback of uniform contexts | judgement |
 | Safety | Add a raw-format escape path and a hard cap on message size | measured (worst case) |
-| Transport | Phase 1: keep the existing netchan. Phase 2: improve acknowledgement latency and precision, and the gamestate/reliable path. Evaluate libraries only against the requirements in 4.7 | measured (what matters), judgement (how) |
-| Rate | Re-evaluate the default client `rate` once the new codec exists | measured |
+| Transport | Codec first on the existing netchan (steps 1 to 8 of 05); then an acknowledgement record, newest-acknowledged base and a reliable path for the gamestate and commands (step 9). Evaluate libraries only against the requirements in 4.7 | measured (what matters), judgement (how) |
+| Settings | Remove `rate`, `snaps`, `cl_maxpackets`, `cl_packetdup`, `cl_timeNudge` and similar; compute them at run time (4.10, step 10 of 05) | judgement |
+| Reuse | Keep the codec a library driven by the field tables, so other JKA forks can link it with their own tables | judgement |
 | Not studied | Entity priority, interest culling, bandwidth budgets, client to server direction | not measured |
 
 ## 4.2 The message model
@@ -58,7 +60,7 @@ Offer three more modes to the per-field chooser: a time field against the messag
 
 ## 4.3 Precision policy
 
-**Rule: the client must receive exactly the values it receives today.** The study's equality criterion (the round-trip tests) is "equal to what the current client sees", which includes truncation to the declared width and `-0.0` becoming `+0.0`.
+**Rule: the client must never receive less precise values than today** (owner's goal 1, README). With float32 positions, that means the decoded values are identical to today's. The study's equality criterion (the round-trip tests) is "equal to what the current client sees", which includes truncation to the declared width and `-0.0` becoming `+0.0`.
 
 Reasons for not rounding positions (read, 02 section 2.8):
 
@@ -96,15 +98,18 @@ Rejected, with measured reasons: static Huffman per context (+10 %), adaptive bi
 - Per-field absolute/delta modes are part of the table data (50 of the 100 distinct field names chose delta).
 - Base age: the loss and latency runs use tables trained on a mix of ages; whether age-specific tables (or the age as a context) would be smaller was not measured, because the 0 % loss, 50 ms figure of that experiment (152.2) is not comparable with the age-1 codec figures (different test selection and it includes messages with server commands). Test it before fixing the table design, and keep the age low (4.7).
 
-## 4.6 Mods and game-module compatibility
+## 4.6 Mods, game modules and reuse by other forks
 
-- The codec should consume and produce `entityState_t` and `playerState_t`, so `game` and `cgame` are unchanged: they see the same `trap_GetSnapshot` data.
+Compatibility with existing mods and with the old protocol is not required (owner's goal 2). What matters is that the netcode can be reused by other JKA forks.
+
+- The codec should consume and produce `entityState_t` and `playerState_t`, so `game` and `cgame` need no change: they see the same `trap_GetSnapshot` data. They may still be changed for their own reasons.
+- Prediction rules must rely only on fields every Quake 3 derived game has (`trType`, `trBase`, `trDelta`, `trTime`, `serverTime`, `origin`, `velocity`, `commandTime`) and must handle both `TR_LINEAR_STOP` and `TR_INTERPOLATE` players, because the game module decides which is sent (03 section 3.12).
 - The field list and widths (`entityStateFields`, `playerStateFields`) must remain the single description of what is networked. The codec's tables should be generated from it (the study extracted them from `msg.cpp` by pattern; a build step or code generation from the same arrays is better).
 - Runtime width overrides (`netf_overrides.txt`, `psf_overrides.txt`, 02 section 2.3) are used by mods to widen the `user*` fields. Decide explicitly: keep the mechanism (tables regenerated or widths read at start, with the generic tables as a fallback for those fields), or remove it and put the needed width in the field list. Do not silently ignore it.
 
 ## 4.7 Transport
 
-**Exploratory. See [08-transport-study.md](08-transport-study.md) for the facts read in the code, the security analysis, the requirements and the candidate libraries as read. Do not act on this section before the codec exists (phases 1 to 3 of 05); the transport choice should be made with the real codec payloads.**
+**Exploratory. See [08-transport-study.md](08-transport-study.md) for the facts read in the code, the security analysis, the requirements and the candidate libraries as read. Do not act on this section before the codec exists (steps 1 to 8 of 05); the transport choice should be made with the real codec payloads.**
 
 What the measurements say about what the transport must do:
 
@@ -115,7 +120,7 @@ What the measurements say about what the transport must do:
 5. **Fixed overhead.** Per packet today: 4 bytes netchan + 28 bytes IP/UDP. In the one-player case the new codec payload is 7 to 9 bytes, so headers are 80 % of the packet. An authentication tag (16 bytes in the hand-off's figure, not verified) would make the solo case cost more than today's unencrypted traffic (9.3 against 7.9 kbit/s in the study's table). Decide whether encryption is wanted before choosing.
 6. **Licence and scale.** Anything adopted must be compatible with GPL v2 (BSD-3, MIT, zlib, CC0 are; Apache-2.0 and GPL v3 are not for the GPL-v2-only files), support the intended player count (the hand-off notes yojimbo at a maximum of 64 clients), IPv6, and a non-blocking API usable from the existing socket code.
 
-Recommendation: do the codec first on the existing netchan (phase 1 of 05). The codec is independent of the transport and carries the largest measured gains. Then change the acknowledgement path and the gamestate path (phase 2). Evaluate yojimbo and GameNetworkingSockets only against the list above; their licences, maintenance, dependencies and costs were **not** checked in this study, and a single third-party report in the hand-off (GameNetworkingSockets at 8.4 % CPU with 256 clients) was not verified.
+Recommendation: do the codec first on the existing netchan (steps 1 to 8 of 05). The codec is independent of the transport and carries the largest measured gains. Then change the acknowledgement path and the gamestate path (step 9), then the settings (step 10). Evaluate yojimbo and GameNetworkingSockets only against the list above; their licences, maintenance, dependencies and costs were **not** checked in this study, and a single third-party report in the hand-off (GameNetworkingSockets at 8.4 % CPU with 256 clients) was not verified.
 
 ## 4.8 Safety
 
@@ -126,7 +131,7 @@ Recommendation: do the codec first on the existing netchan (phase 1 of 05). The 
 
 ## 4.9 Other server-side policy to revisit
 
-- **Default `rate`.** At the client default of 4000 bytes per second the engine delays 93 % of snapshots; the new codec delays 39 %. With the new codec, the default can be raised or the rate formula's 48-byte allowance revisited. Measure after the codec exists.
+- **Default `rate`.** At the 1.01 client default of 4000 bytes per second the engine delays 93 % of snapshots; the new codec delays 39 %. TaystJK's defaults (rate 25000 imposed by the server in this branch) delay none on the study's data (09 section 9.2). The plan replaces the setting by a measured bandwidth estimate (4.10).
 - **Snapshot rate.** `snaps` 20 and `sv_fps` 20 are the defaults used in the captures. A higher rate is cheaper in bytes per snapshot with the new codec, but the study did not measure its effect on size per second.
 - **Not studied (and potentially large):** per-client priority and bandwidth budgets, distance-based update frequency, interest management (culling entities the client does not need), and delta coding of entities relative to each other. The study measured only how well a given set of updates is coded, not which updates to send.
 

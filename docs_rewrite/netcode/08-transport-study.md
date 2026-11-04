@@ -1,6 +1,6 @@
 # 8. Transport study (exploratory)
 
-**Status: exploratory. Do not act on this document before the new codec exists (phases 1 to 3 of [05](05-implementation-plan.md)).** It records what was read in the engine and about candidate libraries, derives requirements from the measurements of [03](03-results.md), and proposes how to decide. Nothing here was prototyped or measured on a network. Statements about libraries come from reading their repositories on 4 November 2026 (README, licence, standard, headers, a line count); they were not built or run.
+**Status: exploratory. Do not act on this document before the new codec exists (steps 1 to 8 of [05](05-implementation-plan.md)).** It records what was read in the engine and about candidate libraries, derives requirements from the measurements of [03](03-results.md), and proposes how to decide. Nothing here was prototyped or measured on a network. Statements about libraries come from reading their repositories on 4 November 2026 (README, licence, standard, headers, a line count); they were not built or run.
 
 Why wait for the codec:
 
@@ -48,13 +48,13 @@ Short answer: **Huffman never gave any security, and the new codec gives none ei
 | Replay of old packets | the netchan drops `sequence <= incomingSequence`, which stops simple replays | the same | explicit replay window |
 | Connection-flood and amplification | `getstatus` and `getinfo` answers are presumably larger than the requests (sizes not measured); challenge table of 1024 with `rand()`; no cryptographic cookie | the same | depends on the library (netcode has connect tokens and amplification protection per its README) |
 | Malicious server attacking a client through malformed data | the existing readers have some checks (for example `CL_ParseSnapshot` validity tests, the `readcount > cursize` tests in `CL_ParseServerMessage`); their completeness was not audited | **new attack surface**: a new decoder with tables, gap-coded indices, string lengths, entity numbers | same as before for the parser |
-| Malicious client attacking the server | the same for what the server parses (`usercmd`, client commands) | unchanged in phase 1 (server-to-client codec only); becomes a new surface if the `usercmd` stream is recoded | same |
+| Malicious client attacking the server | the same for what the server parses (`usercmd`, client commands) | unchanged by the codec steps (server-to-client codec only); becomes a new surface if the `usercmd` stream is recoded | same |
 | Cheating through packet inspection (for example reading entity data a client should not know) | the server decides which entities to send (`SV_AddEntitiesVisibleFromPoint`); the codec does not change that | the same | the same |
 
 What this implies:
 
 1. **Do not describe the codec as protection.** It is neither better nor worse than Huffman on confidentiality or integrity.
-2. **Harden the decoder.** Bounds-check every index and length (entity number below `MAX_GENTITIES`, field index below the table length, string and download lengths), limit the number of operations per message, fail closed (drop the message) and fuzz it in CI. The plan has this in 04 section 4.8 and 05 phase 4. The decoder never writes outside a fixed-size output structure, which is the usual class of exploitable bugs.
+2. **Harden the decoder.** Bounds-check every index and length (entity number below `MAX_GENTITIES`, field index below the table length, string and download lengths), limit the number of operations per message, fail closed (drop the message) and fuzz it in CI. The plan has this in 04 section 4.8 and 05 step 8. The decoder never writes outside a fixed-size output structure, which is the usual class of exploitable bugs.
 3. **A decompression-bomb risk does not apply** in the usual sense: every decoded symbol is bounded by the schema (a message produces at most one value per field per entity and at most `MAX_GENTITIES` entities).
 4. **Real security is a transport decision.** If cheating by packet injection, spoofing or traffic reading matters to the project, an authenticated encrypted transport is needed (section 8.4). That has a cost in bytes (section 8.5) and in connection design (connect tokens, section 8.4).
 5. **Side channels from compression**: compressing attacker-influenced data together with secrets and then encrypting it can leak information (the CRIME / BREACH class). This does not apply to the design here, because the codec uses static tables with no cross-packet state and the secret (keys) is never inside the coded payload. Keep it that way.
@@ -70,14 +70,14 @@ Evidence is from [03](03-results.md) unless noted. "Must" means the codec's gain
 | T3 | Reliable ordered channel for the gamestate, server commands, client commands and downloads, with its own fast retransmission | should | the engine resends a lost gamestate only after about 1,000 ms (3.10); a lost fragment loses the whole message |
 | T4 | Message size above the MTU handled by the transport (fragmentation with reassembly), or avoided by the codec | should | 2 of 8,836 messages exceed 1,300 bytes for ordinary play; the gamestate (4,024 bytes) and crowd snapshots do |
 | T5 | Low fixed overhead per packet | should | the solo payload is 7 to 9 bytes; the netchan header is 4 bytes plus 28 bytes of IP and UDP |
-| T6 | Bandwidth control that adapts, with a sensible default | should | at the default `rate` 4000 the engine delays 93 % of snapshots (3.10) |
+| T6 | Bandwidth control that adapts, with no setting to tune (owner's goal 3) | must | at the default `rate` 4000 the engine delays 93 % of snapshots (3.10) |
 | T7 | Authenticated and encrypted packets | could / decision for the owner | the current scheme has none (8.2) |
 | T8 | Connection handshake with stateless, unpredictable cookies and amplification limits | should | challenge from `rand()`, `getstatus` amplification (8.1, 8.2) |
 | T9 | IPv6 | should | no IPv6 in `win_net.cpp` (8.1) |
-| T10 | 32 to 64 or more simultaneous clients on a dedicated server (Windows and Linux) | must | the owner's player count is not fixed; the engine has `linuxjampded` |
+| T10 | 32 to 64 or more simultaneous clients on a dedicated server (Windows and Linux) | must | the owner's player count is not fixed (TaystJK's `MAX_CLIENTS` is 32); the engine has a Linux dedicated server |
 | T11 | Licence compatible with GPL v2 (BSD-2, BSD-3, MIT, zlib, CC0), no Apache-2.0 / GPL v3 dependency in the linked code, or an explicit decision on the licence of the whole | must | most CleanJK files are GPL v2 only (02, section 2.9) |
 | T12 | The server-browser and master-server queries (`getinfo`, `getstatus`, heartbeats) keep working or are replaced | must | the server list is how players find games |
-| T13 | Statistics: RTT, jitter, loss per connection, to drive T6 | could | currently estimated only by the ping in the snapshots |
+| T13 | Statistics: RTT, jitter, loss per connection, to drive T6 | must | step 10 of 05 computes the settings from these measurements; today only the ping in the snapshots exists |
 | T14 | A way to test with loss, latency and jitter (a simulator) | should | the study's loss results are models |
 
 ## 8.4 Candidate approaches
@@ -136,7 +136,7 @@ So an authenticated transport adds roughly 10 to 17 % to a normal snapshot and 4
 3. **Build a small test harness**, outside the game, that sends the codec's recorded messages through (a) the netchan model, (b) netcode + reliable, and optionally (c) GameNetworkingSockets, with emulated latency, jitter and loss. Measure: overhead per packet, CPU per client at 64 clients, behaviour under 5 / 10 / 20 % loss, behaviour with large messages (gamestate), reconnect time.
 4. **Review the licences and builds** on the target platforms (Windows and Linux dedicated server), including libsodium and OpenSSL if used, with a legal reading where the licence is not plainly compatible.
 5. **Decision gate.** Choose by this order: licence and maintainability first, then behaviour under loss and latency, then overhead, then integration cost. Record the decision with the measurements.
-6. Only then integrate (phase 5 of the plan).
+6. Only then integrate (steps 9 to 11 of the plan).
 
 Design notes whichever option is chosen:
 
@@ -154,6 +154,8 @@ Design notes whichever option is chosen:
 - Whether the encrypted-transport overhead is acceptable for the owner's target: that is a product decision, not a measurement.
 
 ## 8.7 Questions for the owner (needed before step 1)
+
+Answered so far (4 November 2026): compatibility with the old protocol and mods is not required; network settings should be computed, not configured. The questions below are still open.
 
 1. Is authenticated encryption a requirement? If yes, is a backend that issues connect tokens acceptable, or must anyone be able to connect to a public server directly?
 2. Target number of simultaneous players per server (the answer decides between libraries with client caps, 100 for yojimbo as documented, and larger designs).

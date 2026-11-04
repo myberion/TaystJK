@@ -1,177 +1,201 @@
-# 5. Implementation plan: server, client and tooling changes
+# 5. Implementation plan: ordered steps
 
-This plan turns the recommendations of [04](04-recommendations.md) into work packages. File names are those of the original 1.01 tree; the same functions in TaystJK, with their line numbers, are listed in [09-taystjk.md](09-taystjk.md) section 9.5. CleanJK has the same structure, but its paths and line numbers were not re-checked, so confirm each file before editing. Effort labels are rough: S = days, M = weeks, L = months, for one engineer who knows the code.
+This plan turns [04](04-recommendations.md) into steps to do one after the other. Each step has a deliverable, a check that says when it is done, and the steps it depends on. It follows the owner's goals listed in the [README](README.md): no loss of precision, no compatibility constraint, as few network settings as possible, and netcode that other JKA forks can reuse.
+
+The work happens in this repository (TaystJK branch). Paths are relative to `codemp/`; where a function is cited, its line in this tree is in [09-taystjk.md](09-taystjk.md) section 9.5. Effort labels: S = days, M = weeks, L = months, for one engineer who knows the code.
 
 ## 5.1 Principles
 
-1. **The game and cgame modules do not change.** The codec reads and writes `entityState_t`, `playerState_t`, the baselines and the server time. `trap_GetSnapshot` returns the same structures as today, so third-party modules built on the existing structures keep working (if the owner wants to keep them at all).
-2. **Equivalence criterion.** For any message, `decode(encode(x))` must equal what the current client would see after decoding the current protocol's version of `x` (truncation to field widths, `-0.0` as `+0.0`). This is the test the study used.
-3. **One independent stream per message.** No coder state survives from one packet to the next.
-4. **The codec is isolated** from the netchan and from the socket layer, so the transport can change later without touching it.
-5. **Keep the legacy path** behind a protocol flag during development, so that results can be compared on the same traffic.
-6. **Data-driven schema.** Field lists, widths and tables are data generated from one source of truth, not retyped.
+1. **Values are never less precise than today.** For any message, the values the client decodes are equal to what the original code delivers (truncation to the field widths, `-0.0` as `+0.0`), or more precise. Every test compares field by field.
+2. **One independent coded stream per message.** No coder state survives from one packet to the next; only acknowledged snapshots are used as bases.
+3. **The codec is a library.** It knows the field descriptors, not the game: no dependency on the server, the client, `game` or `cgame` beyond `entityState_t`, `playerState_t` and their field tables. Another fork links it, supplies its own field tables, trains or loads its own probability tables, and works with the uniform fallback until it does.
+4. **The codec is isolated from the transport.** The transport can change later without touching it.
+5. **Data-driven.** Field lists, widths, modes and tables are data generated from one source of truth, versioned together.
+6. **No legacy path is kept for compatibility.** The protocol number changes and old clients and servers are refused at connection. A switch between the old and the new coder is kept only while it helps comparison and is removed afterwards.
+7. **Settings are measured, not configured.** A new network cvar is added only for debugging or statistics (04 section 4.10).
+8. **Game and cgame may change.** The codec keeps giving them the same structures, so changes there are optional and separate (for example a later audit of prediction and interpolation).
 
-## 5.2 New code
+## 5.2 Steps
 
-A new directory `qcommon/netcodec/` (name to be decided), with no dependency on the server or client:
+### Step 1: confirm the prediction modes with the real codec (Python, S)
 
-| unit | content | notes |
+Depends on: nothing.
+
+- Add to `codec.py` and `codec2.py` the modes measured in 03 section 3.12, offered to the per-field mode chooser rather than forced:
+  - T: time fields (`pos.trTime`, `apos.trTime`, `commandTime`) against the message's `serverTime`;
+  - P2: positions against `old + mean velocity * elapsed`, residual on the 32-bit patterns; two versions of the prediction arithmetic: float (computed in double from float32, rounded once) and integer only;
+  - A2: angle index against `2 * old - older`, where `older` is the base's own base (the client must find it by the base's delta number, not by `seq - 2 * age`).
+- Add the rANS initial-state trick (06 section 6.9) and measure the end-of-stream cost.
+- Check: 0 round-trip failures on the 8,842 real messages, on `fuzz.py` seeds 1 to 5, and in `sim_loss.py`; mean real bytes on 5min-test at most 110 (study: 139.6 without prediction, 106.1 ideal with it); the integer version of P2 within 2 bytes of the float version, or the float version kept with its determinism test of step 6.
+
+### Step 2: one source of truth for the field descriptors (S)
+
+Depends on: nothing (can run alongside step 1).
+
+- Generate, from the arrays of `qcommon/msg.cpp` (`entityStateFields`, `playerStateFields`, `pilotPlayerStateFields`, `vehPlayerStateFields`, the four player-state arrays), a descriptor list: name, offset, width, float flag, array membership, plus a schema version and hash.
+- Decide the fate of the runtime width overrides (`netf_overrides.txt`, `psf_overrides.txt`, 02 section 2.3): read at start and folded into the descriptors, or removed with the needed widths written in the tables.
+- Check: the descriptors reproduce the tables extracted by `jkadec.py` (132, 137, 140, 69 entries); the Python tools read the same generated file.
+
+### Step 3: state recorder in the server (S)
+
+Depends on: step 2.
+
+- A server option that writes, per client and per message, the decoded content the codec needs: header, player state(s), entity list, baselines, server commands, gamestate, downloads, the chosen base and the send time. Simple binary format with the schema hash.
+- It replaces the proxy capture of the study (which recorded bitstreams and needed a Huffman decoder). The proxy stays usable on the original 1.01 server.
+- Check: replaying a recording through the legacy writer gives back the same bytes as the live server sent (or the same values, if byte identity is not possible because of server-side `-0.0`, 06 section 6.4).
+
+### Step 4: new recordings (S to M, mostly playing)
+
+Depends on: step 3 (or the proxy on the 1.01 server).
+
+- Record at `sv_fps` 20 (this branch's default): several humans together, several maps, FFA, team modes, duel, siege if kept, saber and force combat, vehicles if kept, and both game modules (the 1.01 base module, players as `TR_LINEAR_STOP`, and TaystJK's module, players as `TR_INTERPOLATE`, 03 section 3.12).
+- Keep a set of recordings out of all training (held-out set), chosen before any measurement.
+- Check: every recording replays (step 3 check); a written list of what each recording contains.
+
+### Step 5: re-measure on the new data, finish the model (S)
+
+Depends on: steps 1 and 4.
+
+- Re-run `bench2.py`, `bench5.py` and the codec on the new recordings: sizes per map, mode and module; training on part, test on the held-out set.
+- Add the elapsed-time rule for `TR_INTERPOLATE` players (P2 with the two snapshots' `serverTime`), measured on TaystJK-module recordings.
+- Decide: one global table set or per-mode sets; age as a context or not (04 section 4.5).
+- Check: documented mean / p95 / max on the held-out set per map and mode; if held-out sizes exceed training sizes by more than 15 %, widen the training data first.
+
+### Step 6: the codec library in C++ (M)
+
+Depends on: steps 2 and 5.
+
+- New directory `qcommon/netcodec/` (name to be decided), C++ with a C interface, no dependency on server or client:
+
+| unit | content | reference |
 |---|---|---|
-| `rans` | 32-bit byte-renormalising rANS encoder and decoder, 12 to 15-bit probabilities | start from ryg_rans (CC0); `tools/python/codec.py` is a working reference for the unit format (symbol with context, run of raw bits) |
-| `schema` | descriptors of entity and player-state fields (name, offset, width, float flag), the pilot and vehicle subsets, array fields | generated from the existing `entityStateFields` / `playerStateFields` arrays; a field list version number |
-| `tables` | loader for the trained probability tables and per-field modes; uniform fallback | binary format with a version and a hash of the schema |
-| `fieldcodec` | value coding: absolute / delta classes, float kinds (zero, integral, angle index, full), angle index conversion | the reference is `put_int`, `put_float`, `get_int`, `get_float` in `codec.py` |
-| `msgcodec` | whole-message encode / decode: header, operations, snapshot, gamestate, commands, setgame, download, mapchange | reference: `codec2.py` |
-| `escape` | raw-format coding of an entity or a message, and the selection rule | not in the study; see 5.4, phase 4 |
-| `tests` | golden-trace round trips, synthetic fuzz, garbage-input fuzz, determinism check | see 5.6 |
+| `rans` | 32-bit byte-renormalising rANS, 12 to 15-bit probabilities, initial-state trick | ryg_rans (CC0); `codec.py` |
+| `schema` | generated descriptors of step 2, pilot and vehicle subsets, arrays | step 2 output |
+| `tables` | loader of trained tables and per-field modes, version and schema hash, uniform fallback | `codec.py` `Tables` |
+| `fieldcodec` | absolute / delta classes, float kinds (zero, integral, angle index, other), prediction modes T, P2, A2 | `put_int`, `put_float`, `get_int`, `get_float` in `codec.py` |
+| `msgcodec` | whole message: header, operations, snapshot, gamestate, commands, setgame, download, mapchange | `codec2.py` |
+| `escape` | raw coding of an entity or a message and the rule that picks it (worst case, 04 section 4.8) | not in the study |
+| `tests` | golden traces, synthetic fuzz, garbage-input fuzz, determinism | 5.4 |
 
-Interfaces (shape only):
+- Interfaces (shape only): `bytes = Encode(base*, header, ops, baselines, tables)`; `ops = Decode(bytes, lookupBase(delta) -> base*, baselines, tables)`, where `lookupBase` is called after the delta has been decoded (as `msg_get` in `codec2.py`). All bounds are checked while decoding (entity numbers below `MAX_GENTITIES`, field indices below the table length, string and download lengths, end of input); a failure drops the message.
+- Check: with the same tables, the C++ encoder produces byte-identical output to the Python codec on all recordings; 0 mismatches on at least 100,000 synthetic messages; random and mutated bytes never crash under ASAN / UBSAN; angle decode and P2 prediction bit-identical on MSVC, GCC and Clang, x86 and x64, optimised and not, for all 65,536 indices and for the recorded positions; encode about 2 microseconds per snapshot on an optimised build (study: 1 to 2 µs for 300 symbols).
 
-- encode: `bytes = Encode(baseSnapshot*, header, ops, baselines, tables)`; decode: `ops = Decode(bytes, lookupBase(delta) -> baseSnapshot*, baselines, tables)` where `lookupBase` is called after the first symbol (the delta distance) has been decoded, exactly as in `msg_get` of `codec2.py`.
-- All bounds are checked while decoding: entity numbers below `MAX_GENTITIES`, field indices below the table length, string and download lengths below `MAX_MSGLEN`, end of input. A failure returns an error that makes the client drop the message (as `CL_ParseSnapshot` already drops invalid snapshots).
+### Step 7: integration in the engine (M)
 
-## 5.3 Changes by file
+Depends on: step 6.
 
-### Server
+- Server: build every message with the codec in `SV_SendClientSnapshot`, `SV_SendClientGameState`, `SV_WriteDownloadToClient` and `SV_SendClientMapChange`; keep the base selection of `SV_WriteSnapshotToClient` for now (step 9 changes it).
+- Client: decode in `CL_ParseServerMessage` into `clSnapshot_t`, `cl.parseEntities` and `cl.entityBaselines`, with the validity rules of `CL_ParseSnapshot` (base valid, matching message number, entities not overwritten) and the `%` sanitation of strings.
+- Cover: bots (built but not sent), spectators, vehicles and pilots, downloads (UDP; HTTP downloads are separate), `svc_setgame`, `svc_mapchange`, and both demo systems: client demos and TaystJK's server-side demos record the message stream, so the demo format changes with the protocol (old demos need the old reader or a converter; decide).
+- New protocol number; refuse a mismatch at the `connect` handshake. Out-of-band messages keep their own format.
+- Statistics cvars or commands: bytes per snapshot, symbols, escapes, base age.
+- Check: a normal game plays with no visible difference; `cg_showmiss` shows no new prediction misses; the statistics match step 5 within 5 %; client and server demos record and play back.
 
-| file | functions | change |
-|---|---|---|
-| `server/sv_snapshot.cpp` | `SV_WriteSnapshotToClient`, `SV_EmitPacketEntities`, `SV_UpdateServerCommandsToClient`, `SV_SendClientSnapshot`, `SV_SendMessageToClient` | Under the new protocol, build the message with the codec from the current `clientSnapshot_t` and the chosen base frame; keep the base selection logic (`:110-134`) but make the base the newest acknowledged frame found through the new acknowledgement record (phase 5). Compute the rate delay from the real message size (`SV_RateMsec`). Keep `svc_setgame` handling. Detect `MAX_MSGLEN` overflow and fall back (phase 4). |
-| `server/sv_client.cpp` | `SV_SendClientGameState`, `SV_ExecuteClientMessage`, `SV_WriteDownloadToClient`, userinfo parsing | Encode the gamestate and downloads with the codec; shorten the gamestate resend path (phase 5); parse the new acknowledgement record. Reconsider the default `rate` clamp. |
-| `server/sv_net_chan.cpp` | `SV_Netchan_Transmit`, `SV_Netchan_Process`, encode / decode | The XOR "encryption" has no security value. Keep it as is or remove it, depending on the encryption decision (04, section 4.7). `svc_EOF` handling (`:140`) must be consistent with the codec's end-of-message operation. |
-| `server/sv_main.cpp`, `sv_init.cpp` | cvars, frame loop | New cvars (`net_codec`, table file name, statistics). `sv_padPackets` and `svc_nop` padding must be reproduced or dropped. |
-| `server/server.h` | `client_t`, `clientSnapshot_t` | Keep the frame history needed for bases; add the acknowledgement bitfield and counters. |
-| `qcommon/msg.cpp` | field tables | Remain the source of truth for the schema generator. Legacy `MSG_*` stays for OOB, the `connect` handshake and the legacy path. |
-| `qcommon/net_chan.cpp` | `Netchan_Transmit`, `Process` | Phase 5: fragment-size policy, optional ack bitfield in the packet header, reliable channel for gamestate and commands. |
-| `qcommon/huffman.cpp` | | Remains in use for OOB data (the `connect` string). Optional later replacement is a tiny gain (the qbc author reports 10 % on that string; unverified). |
+### Step 8: safety and limits (S)
 
-### Client
+Depends on: step 7.
 
-| file | functions | change |
-|---|---|---|
-| `client/cl_parse.cpp` | `CL_ParseServerMessage`, `CL_ParseSnapshot`, `CL_ParsePacketEntities`, `CL_DeltaEntity`, `CL_ParseGamestate`, `CL_ParseSetGame`, `CL_ParseDownload` | Under the new protocol decode with the codec into `clSnapshot_t`, `cl.parseEntities` and `cl.entityBaselines`. Reproduce the validity rules (`:243-263`): base valid, matching message number, entities not overwritten. Keep `%` sanitation of strings. |
-| `client/cl_net_chan.cpp` | encode / decode | Mirror of the server file. |
-| `client/cl_input.cpp` (`CL_WritePacket`) and `client/cl_main.cpp` | acknowledgement fields in client messages; `rate` and `snaps` defaults | Phase 5: send the acknowledgement record; re-evaluate the default `rate` (4000, `cl_main.cpp:2636`). |
-| `client/client.h` | `clSnapshot_t`, `clientActive_t` | Keep. |
-| cgame, game, ui | | No change (principle 1). Re-run the prediction error counters (`cg_showmiss`) before and after to detect any difference. |
+- Escape path per entity, chosen when its coded size would exceed the raw size.
+- Size cap: on overflow, retry with fewer entities or a full-state message; never drop a snapshot silently (today the engine clears the message and prints a warning, `server/sv_snapshot.cpp:1061-1064`).
+- Fuzz corpus and sanitizer builds in CI.
+- Check: the synthetic worst case (every field random, 1,000 entities) stays within the raw layout plus a small constant and decodes.
 
-### Tools and build
+### Step 9: acknowledgements, base selection, reliable data (M)
 
-| item | content |
-|---|---|
-| state recorder | A server option that writes, for each client, the sequence of snapshot states (player state, entity list, header), the baselines, the commands and the gamestate in a simple binary file. It replaces the capture of the study, which recorded bitstreams and needed a Huffman decoder. |
-| trainer | Reads recordings, runs the encoder in counting mode, writes the tables file (per-context counts to probabilities, per-field absolute/delta modes). The study's `choose_modes` and `Tables` are the reference. |
-| evaluator | Splits recordings by time, trains on one part, reports mean / p95 / max bytes on the other, as in `bench2.py`. Used for every table update. |
-| simulator | Loss, latency and rate simulation over a recording, as `sim_loss.py` and `frag_rate.py`. |
-| CI | Round-trip on golden traces, fuzz, sanitizer builds, size regression check against the previous tables. |
+Depends on: step 7. The options and the decision procedure are in [08](08-transport-study.md).
 
-## 5.4 Phases
+- Acknowledgement record in every client packet (bitfield of the last 32 or more messages); the server uses the newest acknowledged snapshot as base.
+- Gamestate, server commands and client commands on a reliable path with its own fast resend, instead of the 1,000 ms gamestate resend wait; snapshots never wait behind reliable data.
+- Client input: every `usercmd` not yet acknowledged is resent in each packet, up to a cap; removes `cl_packetdup`.
+- Snapshot history sized from the supported RTT; replaces the fixed `PACKET_BACKUP`.
+- Check: simulated loss, latency and jitter (as `sim_loss.py`, extended to burst loss and lost acknowledgements) and two-machine tests; 0 decode failures; base age equal to RTT / frame time plus at most one frame.
 
-### Phase 0: groundwork (S)
+### Step 10: settings computed at run time (M)
 
-- Move the study's tools into a maintained location with relative paths (they have hard-coded Windows paths, see 07).
-- Create one source of truth for the field descriptors and make the schema generator read it.
-- Build the state recorder and record a first set of traces from the current server, at the snapshot rate the game will ship with (TaystJK defaults to `sv_fps` 40; the study's captures are at 20, see 09 section 9.2).
-- Decide: protocol version number, whether to keep the legacy path, the name and location of the tables file.
-- Acceptance: a recording of a game can be replayed through a harness that reads states back and re-encodes them with the legacy writer to the same bytes.
+Depends on: step 9.
 
-### Phase 1: the codec library, standalone (M)
+- Bandwidth estimate per connection from the acknowledgement record; it sets the snapshot and packet rates. Removes `rate`, `sv_maxRate`, `sv_minRate`, `sv_ratePolicy`, `sv_clientRate`, `sv_lanForceRate`, `snaps`, `sv_snapsMin`, `sv_snapsMax`, `sv_snapsPolicy`, `cl_maxpackets`, `cl_lanForcePackets`.
+- Interpolation delay computed from the measured snapshot interval and jitter. Removes `cl_timeNudge`, `cl_timenudgeDuration` and the user choice of `cg_smoothClients`.
+- Timeouts derived from the keep-alive interval.
+- Debug cvars to force each value and to print the measured ones.
+- Check: on links from LAN to 400 ms RTT and from 2 % to 20 % loss, no setting is needed to reach the snapshot rate the link allows; the forced-value debug cvars reproduce the old behaviour for comparison.
 
-- Implement `rans`, `schema`, `fieldcodec`, `msgcodec`, `tables` and the tests.
-- Port the study's behaviour: gap coding of changed fields, `eType` first, per-field modes, class + mantissa, float kinds including angle indices, header deltas, pilot and vehicle states, commands, gamestate, downloads.
-- Add the prediction modes of 04 section 4.2 (time against `serverTime`, position from velocity, second-order angle) and measure them with the real encoder.
-- Train tables on the study's recordings (or new ones) and reproduce the study's numbers.
-- Acceptance: 0 mismatches on the golden traces and on at least 100,000 synthetic messages; random-byte decoding never crashes under a sanitizer; on a held-out recording of similar content the mean snapshot is within 5 % of 140 bytes (study: 139.6 on the 5-minute test part), the gamestate of the study map is near 4 KB, and encode time per snapshot is of the order of 2 microseconds for 300 symbols on an optimised build.
+### Step 11: transport security and library decision (M to L, optional)
 
-### Phase 2: integration behind a flag (M)
+Depends on: steps 9 and 10, and the owner's answers in 08 section 8.7.
 
-- Wire encode into `SV_SendClientSnapshot` / `SV_SendClientGameState` and decode into `CL_ParseServerMessage` under the new protocol number. Both sides must refuse a protocol mismatch at connection.
-- Make the server and client frame histories hold what the codec needs (full states of the last 32 snapshots; the engine already has `client->frames[PACKET_BACKUP]` and `cl.snapshots[]`).
-- Handle bots (never sent anything), spectators (a followed player's state), vehicles, downloads, `svc_setgame`, `svc_mapchange`.
-- Acceptance: a normal game plays identically with `net_codec 0` and `1`; the prediction error counters and `cg_showmiss` output show no new corrections; bytes per snapshot reported by a cvar match the study within the tolerance above.
+- Decide on authenticated encryption and the connection model; evaluate an in-place AEAD layer, netcode + reliable, GameNetworkingSockets against the requirements of 08 section 8.3, on a prototype with the real codec payloads.
+- Check: the decision is recorded with measured overhead, CPU at 64 clients, behaviour under loss, and licence review.
 
-### Phase 3: training pipeline (M)
+### Step 12: live measurement and tuning (M)
 
-- Record varied sessions: several maps and modes, several humans (this is the gap of the study), saber and force use, vehicles if the game keeps them, different base ages and a range of ping and loss.
-- Establish train/held-out discipline and a size regression check; version the tables with the schema.
-- Decide between one global table set and per-mod or per-gametype sets, with measured sizes.
-- Acceptance: documented mean / p95 / max bytes on held-out sessions per map and mode; if the held-out sizes are more than 15 % above the training-set sizes, enlarge or diversify the training data before shipping.
+Depends on: steps 7 to 10.
 
-### Phase 4: safety and limits (S to M)
+- Playtest servers with the recorder: bytes per client per second, snapshots per second, prediction misses, CPU per client, escape rate.
+- Retrain the tables from the new recordings; size regression check.
 
-- Escape path: per entity or per message raw format, chosen by size, bounded to the raw layout.
-- Overflow handling: if the message would exceed the cap, retry with fewer entities or a smaller update set; never send a truncated or empty snapshot silently.
-- Decoder hardening and a fuzz corpus in CI.
-- Acceptance: the synthetic worst case (every field random, 1000 entities) produces a message no larger than the raw layout plus a small constant, and decodes.
+### Step 13: beyond the codec (L, optional)
 
-### Phase 5: transport (M to L)
+Not studied; the largest unexplored potential (06 section 6.7):
 
-**Exploratory: this phase is a plan to be confirmed after phases 1 to 3.** The decision procedure, requirements and candidate options are in [08-transport-study.md](08-transport-study.md).
+- per-client priority and bandwidth budget, distance-based update rates, interest culling (TaystJK's duel isolation is one form);
+- the client-to-server `usercmd` stream;
+- an audit of the client's prediction and interpolation code (`cg_predict.c`, `cg_ents.c`, time synchronisation in `CL_AdjustTimeDelta`), now that compatibility does not constrain it;
+- a fixed physics step (`pmove_*`, 04 section 4.10), a gameplay decision.
 
-Order of preference, each step measurable on its own:
+## 5.3 Order at a glance
 
-1. Acknowledgement record: add an ack bitfield (last 32 messages) to the client packet, and let the server pick the newest acknowledged base from it. Measure with `sim_loss.py`-style simulation and on a live server. (Judgement: the study modelled the single-number acknowledgement only.)
-2. Gamestate and server commands: remove the dependence on the 1000 ms resend for the gamestate; make fragments recoverable (short resend timer or acknowledgement of fragments).
-3. Fragmentation policy: avoid fragments for snapshots (size cap and escape), keep them for the gamestate if needed.
-4. Encryption decision and, if wanted, adopt an authenticated packet format; evaluate yojimbo and GameNetworkingSockets against 04, section 4.7, including licences, maintenance, dependencies, maximum clients, CPU. Do not adopt a library only for the codec; the codec does not need it.
-5. Default `rate` and the rate formula, after the codec's real sizes are known.
+| step | what | depends on | effort |
+|---|---|---|---|
+| 1 | prediction modes and rANS trick in the Python codec | none | S |
+| 2 | field descriptors from one source | none | S |
+| 3 | state recorder | 2 | S |
+| 4 | new recordings | 3 | S to M |
+| 5 | re-measure, finish the model | 1, 4 | S |
+| 6 | C++ codec library | 2, 5 | M |
+| 7 | engine integration, demos | 6 | M |
+| 8 | safety and limits | 7 | S |
+| 9 | acknowledgements, reliable data | 7 | M |
+| 10 | settings computed at run time | 9 | M |
+| 11 | transport security decision | 9, 10 | M to L |
+| 12 | live measurement | 7 to 10 | M |
+| 13 | beyond the codec | | L |
 
-### Phase 6: live measurement and tuning (M)
-
-- Run public or playtest servers with the recorder and compare: bytes per client per second, snapshots per second under the default `rate`, prediction errors, CPU per client, percentage of escaped entities.
-- Decide the position-rounding question for non-solid entity types after reading `cg_players.c`, `cg_weapons.c`, `cg_event.c`.
-- Update the tables from the new recordings.
-
-### Phase 7: beyond the codec (L, optional)
-
-These were not studied and have the largest unexplored potential:
-
-- Priority accumulators and per-client bandwidth budgets; distance-based update frequency; entity culling.
-- Motion-model prediction of positions (use `trDelta`, previous deltas) so that residuals are small even with exact floats.
-- The client-to-server `usercmd` stream (`MSG_WriteDeltaUsercmdKey`, `msg.cpp:740`).
-- Higher snapshot rates with delta chains.
-
-## 5.5 Compatibility and fallback
-
-- New protocol number; refuse a mismatch at the connect handshake (the `connect` and `getinfo` out-of-band messages keep the legacy Huffman).
-- During development: cvar `net_codec` (0 legacy, 1 new). The legacy path is deleted once phase 6 is accepted.
-- Tables: a missing or wrong-version file selects the uniform fallback (larger packets, still correct) with a warning, never a crash.
-- Mods: a mod that adds or widens network fields needs tables for them (see 04, section 4.6); until then its extra fields use uniform contexts.
-
-## 5.6 Test matrix
+## 5.4 Test matrix
 
 | test | method | when |
 |---|---|---|
-| Golden round trip | decode a recorded stream, re-encode, decode again, compare field by field; compare the engine's own legacy decode as well | every build |
+| Golden round trip | decode recordings, re-encode, decode again, compare field by field; compare with the values of the original decoder | every build |
+| Python and C++ identity | same tables, same input, same bytes | every codec change |
 | Synthetic fuzz | `fuzz.py` generator ported to C++ (any base age, vehicle and pilot, download, extreme values) | every build |
 | Garbage fuzz | random and mutated byte streams into the decoder under ASAN / UBSAN | nightly |
-| Determinism | same bytes in, same states out on MSVC, GCC, Clang, x86 and x64, with and without optimisation; angle decode compared bit by bit for all 65,536 indices | every build |
-| Size regression | evaluator on held-out recordings; fail if the mean grows by more than 3 % | on table or schema change |
-| Loss / latency / rate | simulator over recordings (loss 0 to 20 %, RTT 50 to 400 ms, rate 3000 to 25000) | on transport change |
-| Worst case | adversarial snapshots (crowded, random) must stay within the cap and decode | every build |
-| CPU | the C benchmark over recorded streams on the target machine | on codec change |
-| Live | two or more machines, several humans, packet loss emulation | phase 6 |
+| Determinism | MSVC, GCC, Clang, x86 and x64, optimised and not: all angle indices, P2 predictions on recorded positions | every build |
+| Size regression | evaluator on held-out recordings; fail if the mean grows by more than 3 % | table or schema change |
+| Loss, latency, jitter | simulator over recordings: loss 0 to 20 % with bursts, RTT 0 to 400 ms, jitter, lost acknowledgements | transport change |
+| Worst case | adversarial snapshots stay within the cap and decode | every build |
+| CPU | C benchmark over recordings on the target machine | codec change |
+| Live | two or more machines, several humans, loss emulation | step 12 |
 
-## 5.7 Risks
+## 5.5 Risks
 
 | risk | consequence | mitigation |
 |---|---|---|
-| Training data too narrow (one map, bots only) | real packets larger than the study's | phase 3 recordings; escape path; held-out check before shipping |
-| Table drift when game content or mods change | larger packets, never wrong packets | versioned tables, uniform fallback, retrain step in the release procedure |
-| Angle index or float edge case differs between compilers | client-server mismatch of a view angle | bit-exact test over all indices; encoder checks the round trip per value |
-| Hidden dependence on exact server floats | the study treats `-0.0` and `+0.0` as equal because the engine does | keep the equivalence criterion explicit; compare with the legacy decode |
-| Message size growth under adversarial or unusual states | overflow or fragmentation | escape path, cap, fallback |
-| Acknowledgement redesign breaks the base-selection logic | wrong base, corrupted deltas | codec round trip tests with simulated loss, as `sim_loss.py` |
-| Transport library adoption cost | time spent on a feature the codec does not need | adopt only if the requirements in 04 section 4.7 are not met more cheaply in the existing netchan |
-| Prediction behaviour change | visible corrections | keep positions exact; compare `cg_showmiss` counters |
-| Scope creep into priority and culling | schedule | keep phase 7 separate from the codec delivery |
+| Training data too narrow | real packets larger than measured | step 4 recordings, held-out set, escape path |
+| Table drift when content or mods change | larger packets, never wrong ones | versioned tables, uniform fallback, retrain in the release procedure |
+| P2 prediction computed differently on client and server | wrong positions on the client | integer version, or fixed float arithmetic with the determinism test |
+| A2 base's base not available on the client | decode failure | the server uses the base's real delta source; fall back to plain delta when the client cannot have it |
+| Server-side `-0.0` and similar hidden bit patterns | the study treats `-0.0` and `+0.0` as equal because the engine does | keep the equality rule explicit in tests |
+| Message growth under unusual states | overflow, fragmentation | escape path, cap, fallback |
+| Acknowledgement redesign breaks base selection | corrupted deltas | round-trip tests under simulated loss |
+| Bandwidth estimation oscillates or is too slow | stutter, delayed snapshots | simulator with changing links before live tests; debug cvars to force values |
+| Demo format change | old demos unreadable | keep a legacy reader or write a converter |
+| Scope creep into priority, culling, prediction audit | schedule | keep step 13 separate |
 
-## 5.8 Success criteria taken from the study
+## 5.6 Targets taken from the study
 
-These are targets, not guarantees; they hold for the study's content (one map, bots) and must be re-measured on the new recordings:
+Targets for the study's content (one map, bots, 20 snapshots per second); to be re-measured in step 5:
 
-- Snapshot payload mean about 140 bytes against 337 today (-58 %); p95 about 240; maximum below 500 for ordinary snapshots.
-- 15 snapshots per second instead of 8 at the default `rate` 4000.
-- Gamestate at about 4 KB instead of 7 KB on the study map.
-- Encoding and decoding each below 0.3 % of a core for 64 clients at 20 snapshots per second.
-- Zero decode mismatches in every test of 5.6.
+- snapshot payload mean at most 110 bytes against 337.6 today, p95 about 190, maximum below 450 for ordinary snapshots;
+- gamestate about 4 KB instead of 7 KB on the study map;
+- encoding and decoding each below 0.3 % of a core for 64 clients at 20 snapshots per second;
+- zero decode mismatches in every test of 5.4.

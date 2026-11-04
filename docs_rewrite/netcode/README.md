@@ -38,7 +38,7 @@ These constrain every recommendation in this folder:
 | [02-engine-code-findings.md](02-engine-code-findings.md) | What was read in the engine and the client game code, with `file:line` references | you need the facts behind the design |
 | [03-results.md](03-results.md) | All measured results in tables, with the script that produced each one | you need the numbers |
 | [04-recommendations.md](04-recommendations.md) | Recommended algorithms, schema, precision policy, transport policy, and the reasons | you are deciding what to build |
-| [05-implementation-plan.md](05-implementation-plan.md) | Phased plan of the server, client and tooling changes, with tests and acceptance criteria | you are going to implement it |
+| [05-implementation-plan.md](05-implementation-plan.md) | Ordered steps (1 to 13) from the Python codec to the engine, transport and settings, each with a deliverable, a check and its dependencies; tests and risks | you are going to implement it |
 | [06-verification-guide.md](06-verification-guide.md) | Claims with confidence levels, known weaknesses, mistakes made on the way, and ideas that were not explored | you are going to re-check the work or look for better solutions |
 | [07-reproduction.md](07-reproduction.md) | Tools, file formats, commands, data checksums, environment | you want to re-run something |
 | [08-transport-study.md](08-transport-study.md) | **Exploratory.** How the current transport and its "encryption" work, security implications, transport requirements derived from the measurements, candidate libraries as read (not run), and how to decide. Wait for the codec before acting on it | you are going to touch the transport |
